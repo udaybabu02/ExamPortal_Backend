@@ -11,35 +11,40 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// --- DATABASE CONNECTION ---
-// Using process.env variables for security and deployment
-const pool = mysql.createPool({
+// --- DATABASE CONNECTION (SMART CONFIGURATION) ---
+const dbConfig = {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    port: process.env.DB_PORT || 4000,
-    
-    // 🚨 STRICT SSL REQUIRED FOR TiDB CLOUD 🚨
-    ssl: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: true
-    },
-
+    port: process.env.DB_PORT || 3306,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
-});
+};
+
+// Auto-detect: If we are running on Render (Cloud), add the required strict SSL rules.
+// If we are running on your laptop (localhost), it skips this so XAMPP doesn't crash.
+if (process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
+    dbConfig.ssl = {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+    };
+}
+
+const pool = mysql.createPool(dbConfig);
 
 // Test connection on startup
 pool.getConnection()
     .then(conn => {
-        console.log("✅ Successfully connected to TiDB/MySQL database");
+        const envName = process.env.DB_HOST === 'localhost' ? 'Local' : 'Cloud';
+        console.log(`✅ Successfully connected to ${envName} MySQL database`);
         conn.release();
     })
     .catch(err => {
         console.error("❌ Database connection failed:", err.message);
     });
+
 
 // --- ROUTES ---
 
@@ -116,6 +121,7 @@ app.post('/api/results', async (req, res) => {
     try {
         const { userId, examId, percentage, passed, totalQuestions, correctAnswers, wrongAnswers, answers } = req.body;
 
+        // Start Transaction: If any part of this fails, nothing gets saved.
         await connection.beginTransaction();
 
         const resultQuery = `
@@ -130,6 +136,7 @@ app.post('/api/results', async (req, res) => {
         const answerQuery = `INSERT INTO result_answers (result_id, question_id, user_answer, is_correct) VALUES (?, ?, ?, ?)`;
 
         for (const ans of answers) {
+            // Strip out non-numeric characters just in case the frontend sends "Q1" instead of "1"
             const pureQuestionId = parseInt(ans.questionId.toString().replace(/\D/g, ''));
             const pureExamId = parseInt(examId.toString().replace(/\D/g, ''));
 
@@ -141,9 +148,11 @@ app.post('/api/results', async (req, res) => {
             ]);
         }
 
+        // Everything worked, save it to the database permanently
         await connection.commit();
         res.status(201).json({ message: "Result saved!" });
     } catch (error) {
+        // Something went wrong, undo everything
         await connection.rollback();
         console.error("Save Results Error:", error);
         res.status(500).json({ message: "Failed to save results." });
