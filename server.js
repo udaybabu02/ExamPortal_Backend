@@ -18,7 +18,14 @@ const pool = mysql.createPool({
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    port: process.env.DB_PORT || 3306,
+    port: process.env.DB_PORT || 4000,
+    
+    // 🚨 STRICT SSL REQUIRED FOR TiDB CLOUD 🚨
+    ssl: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+    },
+
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
@@ -27,7 +34,7 @@ const pool = mysql.createPool({
 // Test connection on startup
 pool.getConnection()
     .then(conn => {
-        console.log("✅ Successfully connected to MySQL database");
+        console.log("✅ Successfully connected to TiDB/MySQL database");
         conn.release();
     })
     .catch(err => {
@@ -71,6 +78,7 @@ app.post('/api/register', async (req, res) => {
         if (error.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({ message: "Account already exists with this email or ID." });
         }
+        console.error("Registration Error:", error);
         res.status(500).json({ message: "Server error during registration." });
     }
 });
@@ -97,6 +105,7 @@ app.post('/api/login', async (req, res) => {
             user: { id: user.id, name: user.name, email: user.email }
         });
     } catch (error) {
+        console.error("Login Error:", error);
         res.status(500).json({ message: "Server error during login." });
     }
 });
@@ -136,6 +145,7 @@ app.post('/api/results', async (req, res) => {
         res.status(201).json({ message: "Result saved!" });
     } catch (error) {
         await connection.rollback();
+        console.error("Save Results Error:", error);
         res.status(500).json({ message: "Failed to save results." });
     } finally {
         connection.release();
