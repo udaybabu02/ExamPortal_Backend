@@ -10,42 +10,43 @@ const PORT = process.env.PORT || 5000;
 app.use(cors()); 
 app.use(express.json());
 
-// --- DATABASE CONNECTION ---
+// --- DATABASE CONNECTION CONFIG ---
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    port: process.env.DB_PORT || 3306,
+    port: parseInt(process.env.DB_PORT) || 13699,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
     enableKeepAlive: true,
-    keepAliveInitialDelay: 10000
+    keepAliveInitialDelay: 10000,
+    // CRITICAL: Aiven Cloud requires SSL. 
+    // We set rejectUnauthorized to false to allow the connection without a local CA certificate.
+    ssl: {
+        rejectUnauthorized: false
+    }
 };
-
-// SSL Config for Cloud DBs
-if (process.env.DB_HOST && process.env.DB_HOST !== 'localhost') {
-    dbConfig.ssl = { minVersion: 'TLSv1.2', rejectUnauthorized: true };
-}
 
 const pool = mysql.createPool(dbConfig);
 
 // Startup Connection Test
 pool.getConnection()
     .then(conn => {
-        console.log(`✅ Connected to Database: ${process.env.DB_NAME}`);
+        console.log(`✅ SUCCESS: Connected to Aiven Cloud Database: ${process.env.DB_NAME}`);
         conn.release();
     })
     .catch(err => {
-        console.error("❌ DB Connection Failed:", err.message);
+        console.error("❌ CLOUD DB CONNECTION FAILED:", err.message);
+        console.error("Ensure your IP is allowed in Aiven console if required.");
         process.exit(1); 
     });
 
 // --- ROUTES ---
 
 // Health Check
-app.get('/', (req, res) => res.send('ARMS Portal Backend is Active'));
+app.get('/', (req, res) => res.send('ARMS Portal Backend is Active on Aiven Cloud'));
 
 // 1. Get Active Exams
 app.get('/api/exams', async (req, res) => {
@@ -62,10 +63,8 @@ app.get('/api/exams', async (req, res) => {
 app.get('/api/questions/:subject', async (req, res) => {
     try {
         const subjectName = decodeURIComponent(req.params.subject);
-        console.log(`🔍 Generating strict exam set for: "${subjectName}"`);
+        console.log(`🔍 Generating random exam for: "${subjectName}"`);
 
-        // ORDER BY RAND() shuffles the questions differently for every single user.
-        // LIMIT 10 ensures they only ever get exactly 10 questions.
         const query = `
             SELECT id, question_text, option_a, option_b, option_c, option_d, correct_answer 
             FROM questions 
@@ -75,8 +74,6 @@ app.get('/api/questions/:subject', async (req, res) => {
         `;
         const [rows] = await pool.query(query, [subjectName]);
         
-        console.log(`📊 Result: Distributed ${rows.length} random questions.`);
-
         if (rows.length === 0) {
             return res.status(404).json({ message: "No questions found for this subject." });
         }
@@ -88,13 +85,10 @@ app.get('/api/questions/:subject', async (req, res) => {
     }
 });
 
-// 3. User Registration (Updated to Plain Text Passwords)
+// 3. User Registration (Plain Text)
 app.post('/api/register', async (req, res) => {
     try {
         const { name, email, mobile, password, idType, userId, hallTicket } = req.body;
-        console.log(`👤 New Registration: ${email}`);
-
-        // Removed bcrypt: inserting plain text password directly
         const query = `
             INSERT INTO users (name, email, mobile, password, id_type, user_id_value, hall_ticket)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -111,24 +105,19 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// 4. User Login (Updated to Plain Text Comparison)
+// 4. User Login (Plain Text Comparison)
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        console.log(`🔑 Login attempt: ${email}`);
-
         const [rows] = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', [email]);
         
         if (rows.length === 0) return res.status(401).json({ message: "Invalid credentials." });
 
         const user = rows[0];
-        
-        // Removed bcrypt: direct plain-text string comparison
         if (password !== user.password) {
             return res.status(401).json({ message: "Invalid credentials." });
         }
 
-        console.log(`✅ Login Success: ${user.name}`);
         res.status(200).json({
             message: "Login successful",
             user: { id: user.id, name: user.name, email: user.email }
@@ -139,15 +128,13 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 5. Save Exam Results (Updated to include student_name)
+// 5. Save Exam Results
 app.post('/api/results', async (req, res) => {
     const connection = await pool.getConnection();
     try {
-        // Extracting studentName from the incoming request body
         const { userId, studentName, examId, percentage, passed, totalQuestions, correctAnswers, wrongAnswers, answers } = req.body;
         await connection.beginTransaction();
 
-        // Added student_name column and variable to the INSERT query
         const [resultHeader] = await connection.execute(
             `INSERT INTO results (user_id, student_name, exam_id, score_percentage, status, total_questions, correct_count, wrong_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [userId, studentName, examId, percentage, passed ? 'PASSED' : 'FAILED', totalQuestions, correctAnswers, wrongAnswers]
@@ -162,7 +149,6 @@ app.post('/api/results', async (req, res) => {
         }
 
         await connection.commit();
-        console.log(`📊 Results saved for User ID: ${userId} (${studentName})`);
         res.status(201).json({ message: "Result saved!" });
     } catch (error) {
         await connection.rollback();
@@ -173,7 +159,7 @@ app.post('/api/results', async (req, res) => {
     }
 });
 
-// 6. Get User's Completed Exams
+// 6. Get User Progress
 app.get('/api/user/completed-exams/:userId', async (req, res) => {
     try {
         const userId = req.params.userId;
@@ -181,9 +167,7 @@ app.get('/api/user/completed-exams/:userId', async (req, res) => {
             'SELECT DISTINCT exam_id FROM results WHERE user_id = ?', 
             [userId]
         );
-        
-        const completedExams = rows.map(row => row.exam_id);
-        res.json(completedExams);
+        res.json(rows.map(row => row.exam_id));
     } catch (error) {
         console.error("❌ Progress Fetch Error:", error);
         res.status(500).json({ message: "Failed to fetch user progress." });
