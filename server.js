@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -89,21 +88,19 @@ app.get('/api/questions/:subject', async (req, res) => {
     }
 });
 
-// 3. User Registration
+// 3. User Registration (Updated to Plain Text Passwords)
 app.post('/api/register', async (req, res) => {
     try {
         const { name, email, mobile, password, idType, userId, hallTicket } = req.body;
         console.log(`👤 New Registration: ${email}`);
 
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
+        // Removed bcrypt: inserting plain text password directly
         const query = `
             INSERT INTO users (name, email, mobile, password, id_type, user_id_value, hall_ticket)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `;
         
-        await pool.query(query, [name, email.toLowerCase(), mobile, hashedPassword, idType, userId, hallTicket]);
+        await pool.query(query, [name, email.toLowerCase(), mobile, password, idType, userId, hallTicket]);
         res.status(201).json({ message: "Registration successful!" });
     } catch (error) {
         if (error.code === 'ER_DUP_ENTRY') {
@@ -114,7 +111,7 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// 4. User Login
+// 4. User Login (Updated to Plain Text Comparison)
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -125,9 +122,11 @@ app.post('/api/login', async (req, res) => {
         if (rows.length === 0) return res.status(401).json({ message: "Invalid credentials." });
 
         const user = rows[0];
-        const isMatch = await bcrypt.compare(password, user.password);
-
-        if (!isMatch) return res.status(401).json({ message: "Invalid credentials." });
+        
+        // Removed bcrypt: direct plain-text string comparison
+        if (password !== user.password) {
+            return res.status(401).json({ message: "Invalid credentials." });
+        }
 
         console.log(`✅ Login Success: ${user.name}`);
         res.status(200).json({
@@ -140,16 +139,18 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 5. Save Exam Results
+// 5. Save Exam Results (Updated to include student_name)
 app.post('/api/results', async (req, res) => {
     const connection = await pool.getConnection();
     try {
-        const { userId, examId, percentage, passed, totalQuestions, correctAnswers, wrongAnswers, answers } = req.body;
+        // Extracting studentName from the incoming request body
+        const { userId, studentName, examId, percentage, passed, totalQuestions, correctAnswers, wrongAnswers, answers } = req.body;
         await connection.beginTransaction();
 
+        // Added student_name column and variable to the INSERT query
         const [resultHeader] = await connection.execute(
-            `INSERT INTO results (user_id, exam_id, score_percentage, status, total_questions, correct_count, wrong_count) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [userId, examId, percentage, passed ? 'PASSED' : 'FAILED', totalQuestions, correctAnswers, wrongAnswers]
+            `INSERT INTO results (user_id, student_name, exam_id, score_percentage, status, total_questions, correct_count, wrong_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [userId, studentName, examId, percentage, passed ? 'PASSED' : 'FAILED', totalQuestions, correctAnswers, wrongAnswers]
         );
 
         const newResultId = resultHeader.insertId;
@@ -161,7 +162,7 @@ app.post('/api/results', async (req, res) => {
         }
 
         await connection.commit();
-        console.log(`📊 Results saved for User ID: ${userId}`);
+        console.log(`📊 Results saved for User ID: ${userId} (${studentName})`);
         res.status(201).json({ message: "Result saved!" });
     } catch (error) {
         await connection.rollback();
@@ -172,17 +173,15 @@ app.post('/api/results', async (req, res) => {
     }
 });
 
-// 6. Get User's Completed Exams (For enforcing strict completion)
+// 6. Get User's Completed Exams
 app.get('/api/user/completed-exams/:userId', async (req, res) => {
     try {
         const userId = req.params.userId;
-        // Find all unique exams this user has submitted
         const [rows] = await pool.query(
             'SELECT DISTINCT exam_id FROM results WHERE user_id = ?', 
             [userId]
         );
         
-        // Convert to a simple array of exam names: ['Java Exam', 'Python Exam']
         const completedExams = rows.map(row => row.exam_id);
         res.json(completedExams);
     } catch (error) {
