@@ -7,10 +7,11 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // --- MIDDLEWARE ---
-// UPDATED: Explicit CORS Configuration
+// Explicit CORS Configuration
 const corsOptions = {
   origin: [
-    'http://localhost:5173', // Local frontend
+    'http://localhost:5173', // Local frontend (Vite default)
+    'http://localhost:8081', // Local frontend (Your current port)
     'https://admin-of-exam.vercel.app', // Live Admin Portal
     'https://exam-portal-frontend-coral.vercel.app' // Live Student Portal
   ],
@@ -60,7 +61,6 @@ app.get('/', (req, res) => res.send('ARMS Portal Backend is Active on Aiven Clou
 
 /**
  * STEP 9: Analytics Dashboard
- * Provides total counts and performance ratios for the Admin Dashboard.
  */
 app.get('/api/admin/analytics', async (req, res) => {
     try {
