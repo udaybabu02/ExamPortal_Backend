@@ -7,7 +7,18 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // --- MIDDLEWARE ---
-app.use(cors()); 
+// UPDATED: Explicit CORS Configuration
+const corsOptions = {
+  origin: [
+    'http://localhost:5173', // Local frontend
+    'https://admin-of-exam.vercel.app', // Live Admin Portal
+    'https://exam-portal-frontend-coral.vercel.app' // Live Student Portal
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+};
+
+app.use(cors(corsOptions)); 
 app.use(express.json());
 
 // --- DATABASE CONNECTION CONFIG ---
