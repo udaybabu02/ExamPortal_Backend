@@ -50,18 +50,42 @@ app.get('/api/admin/exams', async (req, res) => {
 
 app.put('/api/admin/exams/:id/toggle', async (req, res) => {
     try {
-        const { id } = req.params;
-        const { is_active } = req.body;
-        await pool.execute('UPDATE exams SET is_active = ? WHERE id = ?', [is_active, id]);
+        await pool.execute('UPDATE exams SET is_active = ? WHERE id = ?', [req.body.is_active, req.params.id]);
         res.json({ message: "Status updated" });
     } catch (error) { res.status(500).json({ message: "Toggle failed" }); }
+});
+
+app.get('/api/questions', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM questions ORDER BY id DESC');
+        res.json(rows);
+    } catch (error) { res.status(500).json([]); }
+});
+
+app.get('/api/admin/results', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM results ORDER BY id DESC');
+        res.json(rows);
+    } catch (error) { res.status(500).json([]); }
+});
+
+app.get('/api/admin/users', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM users ORDER BY id DESC');
+        res.json(rows);
+    } catch (error) { res.status(500).json([]); }
+});
+
+app.get('/api/admin/analytics', async (req, res) => {
+    try {
+        res.json({ message: "Analytics endpoint active" });
+    } catch (error) { res.status(500).json({}); }
 });
 
 // ==========================================
 // STUDENT ROUTES
 // ==========================================
 
-// 1. Fetch only visible/active exams
 app.get('/api/exams', async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT id, subject, duration_minutes, total_questions FROM exams WHERE is_active = TRUE');
@@ -69,7 +93,6 @@ app.get('/api/exams', async (req, res) => {
     } catch (error) { res.status(500).send("Error fetching exams"); }
 });
 
-// 2. Fetch 10 random questions for a specific subject
 app.get('/api/questions/:subject', async (req, res) => {
     try {
         const subjectName = decodeURIComponent(req.params.subject);
@@ -80,14 +103,18 @@ app.get('/api/questions/:subject', async (req, res) => {
     } catch (error) { res.status(500).json({ message: "Server Error" }); }
 });
 
-// 3. Submit Exam Results
 app.post('/api/results', async (req, res) => {
     const connection = await pool.getConnection();
     try {
         const { userId, studentName, examId, percentage, totalQuestions, correctAnswers, passed } = req.body;
         await connection.beginTransaction();
 
-        // FIX: Find the numeric ID for the subject string (e.g., "Java" -> 1)
+        // OTP Crash Fix: Converts "otp-user" text safely to numeric 0
+        let safeUserId = parseInt(userId, 10);
+        if (isNaN(safeUserId)) {
+            safeUserId = 0; 
+        }
+
         const [examRows] = await connection.query('SELECT id FROM exams WHERE LOWER(subject) = LOWER(?) LIMIT 1', [examId]);
         const actualExamId = examRows.length > 0 ? examRows[0].id : 0; 
 
@@ -95,7 +122,7 @@ app.post('/api/results', async (req, res) => {
 
         await connection.execute(
             'INSERT INTO results (user_id, student_name, exam_id, score_percentage, status, total_questions, correct_count) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-            [userId, studentName, actualExamId, percentage, status, totalQuestions, correctAnswers]
+            [safeUserId, studentName, actualExamId, percentage, status, totalQuestions, correctAnswers]
         );
         
         await connection.commit();
@@ -110,10 +137,12 @@ app.post('/api/results', async (req, res) => {
 });
 
 // Auth endpoints
+// NOTE: If you previously had code inside these blocks for database login, 
+// make sure to paste it back in here!
 app.post('/api/login', async (req, res) => { /* Your existing login logic */ });
 app.post('/api/register', async (req, res) => { /* Your existing register logic */ });
 
-// FIX: Bound server to 0.0.0.0 to pass Render's port scan
+// Render Deployment Fix
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
 });
