@@ -113,4 +113,7 @@ app.post('/api/results', async (req, res) => {
 app.post('/api/login', async (req, res) => { /* Your existing login logic */ });
 app.post('/api/register', async (req, res) => { /* Your existing register logic */ });
 
-app.listen(PORT, () => console.log(`🚀 Server on http://localhost:${PORT}`));
+// FIX: Bound server to 0.0.0.0 to pass Render's port scan
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+});
