@@ -1,7 +1,7 @@
 require('dotenv').config();
 const mysql = require('mysql2/promise');
 
-async function fixTable() {
+async function cleanAndSeedDatabase() {
     const connection = await mysql.createConnection({
         host: process.env.DB_HOST,
         user: process.env.DB_USER,
@@ -12,23 +12,34 @@ async function fixTable() {
     });
 
     try {
-        console.log("🛠️ Updating database schema for Admin Portal requirements...");
+        console.log("🛠️ 1. Rebuilding the exams table from scratch to fix column errors...");
         
-        // Fix Questions Table (Step 4)
+        // This completely wipes the old broken table and its structure
+        await connection.query('DROP TABLE IF EXISTS exams;');
+        
+        // This builds a perfectly clean table with the exact columns your backend expects
         await connection.query(`
-            ALTER TABLE questions 
-            ADD COLUMN IF NOT EXISTS difficulty VARCHAR(20) DEFAULT 'Medium',
-            ADD COLUMN IF NOT EXISTS marks INT DEFAULT 1;
+            CREATE TABLE exams (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                subject VARCHAR(255) NOT NULL,
+                duration_minutes INT DEFAULT 10,
+                total_questions INT DEFAULT 10,
+                is_active BOOLEAN DEFAULT TRUE
+            );
+        `);
+        
+        console.log("🌱 2. Inserting fresh, clean subjects (Java, Python, Aptitude)...");
+        
+        // Inserts the correct data into the newly created table
+        await connection.query(`
+            INSERT INTO exams (subject, duration_minutes, total_questions, is_active) 
+            VALUES 
+            ('Java', 10, 10, TRUE),
+            ('Python', 10, 10, TRUE),
+            ('Aptitude', 10, 10, TRUE);
         `);
 
-        // Fix Exams Table for Dynamic Config (Step 5 & 6)
-        await connection.query(`
-            ALTER TABLE exams 
-            ADD COLUMN IF NOT EXISTS duration_minutes INT DEFAULT 30,
-            ADD COLUMN IF NOT EXISTS total_questions INT DEFAULT 10;
-        `);
-
-        console.log("✅ SUCCESS: Database schema updated for all 11 steps!");
+        console.log("✅ SUCCESS: Database completely rebuilt and seeded! Refresh your Admin Portal.");
     } catch (err) {
         console.error("❌ ERROR:", err.message);
     } finally {
@@ -37,4 +48,4 @@ async function fixTable() {
     }
 }
 
-fixTable();
+cleanAndSeedDatabase();
