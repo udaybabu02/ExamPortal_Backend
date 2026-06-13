@@ -50,14 +50,30 @@ app.get('/', (req, res) => res.send('ARMS Portal Backend is Active!'));
 // 1. STUDENT PORTAL ROUTES
 // ==========================================
 
+// UPGRADED: Bulletproof Registration Route
 app.post('/api/register', async (req, res) => {
     try {
-        const { name, email, password, mobile, idType, hallTicketNumber, userId } = req.body;
-        const sql = 'INSERT INTO users (name, email, password, mobile, id_type, user_id_value, hall_ticket) VALUES (?, ?, ?, ?, ?, ?, ?)';
-        await queryWithTimeout(sql, [name || 'Student', email, password, mobile || '', idType || '', (idType === 'college' ? userId : hallTicketNumber), hallTicketNumber]);
+        console.log("📝 Incoming Registration Data:", req.body);
+
+        // 1. Safely extract every possible variation of the variable names sent by React
+        const name = req.body.name || req.body.studentName || 'Student';
+        const email = req.body.email || req.body.userEmail;
+        const password = req.body.password;
+        const mobile = req.body.mobile || req.body.phoneNumber || '';
+        const idType = req.body.idType || req.body.id_type || '';
+        
+        // Catch all possible variations of the Hall Ticket / User ID field
+        const finalIdValue = req.body.hallTicketNumber || req.body.hallTicket || req.body.userId || req.body.hall_ticket || '';
+
+        // 2. Insert into the database (Removed the problematic 'user_id_value' column)
+        const sql = 'INSERT INTO users (name, email, password, mobile, id_type, hall_ticket) VALUES (?, ?, ?, ?, ?, ?)';
+        
+        await queryWithTimeout(sql, [name, email, password, mobile, idType, finalIdValue]);
+        
         res.status(201).json({ success: true, message: "Registration successful" });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Database error", details: error.message });
+        console.error("❌ REGISTRATION ERROR:", error.message);
+        res.status(500).json({ success: false, message: "Database error", error: error.message });
     }
 });
 
@@ -163,7 +179,7 @@ app.post('/api/results', async (req, res) => {
             }
         }
         
-        // 4. THE FIX: Send the actual grades back to the React frontend!
+        // 4. Send the actual grades back to the React frontend
         res.status(201).json({ 
             success: true, 
             message: "Exam accurately graded and submitted!",
