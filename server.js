@@ -84,44 +84,45 @@ app.get('/api/exams', async (req, res) => {
     }
 });
 
-// UPGRADED: Anti-Duplicate Question Fetcher
+// UPGRADED: Safely filters duplicates using Javascript to prevent database crashes
 app.get('/api/questions/:subject', async (req, res) => {
     try {
         const subject = req.params.subject;
-        // GROUP BY question_text ensures we only pull unique questions, even if duplicates exist in the DB!
-        const sql = `
-            SELECT MIN(id) as id, subject, question_text, option_a, option_b, option_c, option_d, correct_answer 
-            FROM questions 
-            WHERE LOWER(subject) = LOWER(?) 
-            GROUP BY question_text 
-            ORDER BY RAND() 
-            LIMIT 10
-        `;
-        const [questions] = await queryWithTimeout(sql, [subject]);
-        res.json(questions);
+        // 1. Get all questions for this subject in random order
+        const sql = `SELECT * FROM questions WHERE LOWER(subject) = LOWER(?) ORDER BY RAND()`;
+        const [allQuestions] = await queryWithTimeout(sql, [subject]);
+        
+        // 2. Filter out duplicates safely in Node.js
+        const uniqueQuestions = [];
+        const seenTexts = new Set();
+        
+        for (let q of allQuestions) {
+            if (!seenTexts.has(q.question_text)) {
+                seenTexts.add(q.question_text);
+                uniqueQuestions.push(q);
+                if (uniqueQuestions.length === 10) break; // Stop when we have exactly 10 unique questions
+            }
+        }
+        
+        res.json(uniqueQuestions);
     } catch (error) {
+        console.error("❌ QUESTION FETCH ERROR:", error.message);
         res.status(500).json({ message: "Error fetching questions" });
     }
 });
 
-// UPGRADED: Server-Side Grading Results Route
+// UPGRADED: Accurately grades exams and sends the score back to React
 app.post('/api/results', async (req, res) => {
     try {
         const { userId, studentName, examId, totalQuestions = 10, answers } = req.body;
         let calculatedCorrectCount = 0;
 
-        // 1. SERVER-SIDE GRADING: Calculate the score based on the answers array
+        // 1. SERVER-SIDE GRADING
         if (answers && Array.isArray(answers) && answers.length > 0) {
-            // Get all question IDs the student answered
             const questionIds = answers.map(a => a.questionId).filter(id => id);
 
             if (questionIds.length > 0) {
-                // Fetch the real correct answers from the database securely
-                const [dbQuestions] = await pool.query(
-                    `SELECT id, correct_answer FROM questions WHERE id IN (?)`, [questionIds]
-                );
-
-                // Check student answers against the DB
+                const [dbQuestions] = await pool.query(`SELECT id, correct_answer FROM questions WHERE id IN (?)`, [questionIds]);
                 const correctAnswersMap = {};
                 dbQuestions.forEach(q => correctAnswersMap[q.id] = q.correct_answer);
 
@@ -129,7 +130,7 @@ app.post('/api/results', async (req, res) => {
                     const realAnswer = correctAnswersMap[ans.questionId];
                     if (realAnswer && String(ans.selected).trim().toLowerCase() === String(realAnswer).trim().toLowerCase()) {
                         calculatedCorrectCount++;
-                        ans.isCorrect = true; // Mark true for the database insert below
+                        ans.isCorrect = true; 
                     } else {
                         ans.isCorrect = false;
                     }
@@ -140,26 +141,15 @@ app.post('/api/results', async (req, res) => {
         const calculatedPercentage = (calculatedCorrectCount / totalQuestions) * 100;
         const isPassed = calculatedPercentage >= 50 ? 1 : 0;
 
-        // 2. Insert the accurately calculated score into the database
-        const sql = `
-            INSERT INTO results 
-            (user_id, student_name, exam_id, percentage, passed, total_questions, correct_answers) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `;
-        
+        // 2. Insert calculated score into database
+        const sql = `INSERT INTO results (user_id, student_name, exam_id, percentage, passed, total_questions, correct_answers) VALUES (?, ?, ?, ?, ?, ?, ?)`;
         const [insertResult] = await queryWithTimeout(sql, [
-            userId || 0,
-            studentName || 'Unknown Student',
-            examId || 'Unknown Exam',
-            calculatedPercentage,
-            isPassed,
-            totalQuestions,
-            calculatedCorrectCount
+            userId || 0, studentName || 'Unknown Student', examId || 'Unknown Exam', calculatedPercentage, isPassed, totalQuestions, calculatedCorrectCount
         ]);
 
         const newResultId = insertResult.insertId; 
 
-        // 3. Save the individual answer breakdown
+        // 3. Save individual answers
         if (answers && Array.isArray(answers) && answers.length > 0) {
             for (let ans of answers) {
                 try {
@@ -173,7 +163,17 @@ app.post('/api/results', async (req, res) => {
             }
         }
         
-        res.status(201).json({ success: true, message: "Exam accurately graded and submitted!" });
+        // 4. THE FIX: Send the actual grades back to the React frontend!
+        res.status(201).json({ 
+            success: true, 
+            message: "Exam accurately graded and submitted!",
+            data: {
+                score: calculatedPercentage,
+                correct: calculatedCorrectCount,
+                wrong: totalQuestions - calculatedCorrectCount
+            }
+        });
+
     } catch (error) {
         console.error("❌ SUBMISSION ERROR:", error.message);
         res.status(500).json({ success: false, message: "Database error", error: error.message });
@@ -190,19 +190,12 @@ app.get('/api/admin/analytics', async (req, res) => {
         const [[{ count: totalStudents }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM users', []);
         const [[{ count: totalExams }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM exams', []);
         const [[{ count: totalQuestions }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM questions', []);
-        
         let totalResults = 0;
         try {
             const [[{ count }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM results', []);
             totalResults = count;
         } catch (e) {}
-
-        res.json({
-            totalStudents: totalStudents || 0,
-            totalExams: totalExams || 0,
-            totalQuestions: totalQuestions || 0,
-            totalResults: totalResults || 0
-        });
+        res.json({ totalStudents: totalStudents || 0, totalExams: totalExams || 0, totalQuestions: totalQuestions || 0, totalResults: totalResults || 0 });
     } catch (error) {
         res.status(500).json({ message: "Error fetching analytics" });
     }
@@ -275,16 +268,9 @@ app.put('/api/admin/exams/:id/toggle', async (req, res) => {
 app.get('/api/admin/results', async (req, res) => {
     try {
         const sql = `
-            SELECT 
-                id, 
-                student_name, 
-                exam_id, 
-                percentage AS score_percentage, 
-                correct_answers AS correct_count, 
-                (total_questions - correct_answers) AS wrong_count,
-                IF(passed = 1, 'Pass', 'Fail') AS status
-            FROM results 
-            ORDER BY id DESC
+            SELECT id, student_name, exam_id, percentage AS score_percentage, correct_answers AS correct_count, 
+            (total_questions - correct_answers) AS wrong_count, IF(passed = 1, 'Pass', 'Fail') AS status
+            FROM results ORDER BY id DESC
         `;
         const [rows] = await queryWithTimeout(sql, []);
         res.json(rows);
