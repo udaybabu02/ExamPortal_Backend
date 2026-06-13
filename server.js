@@ -95,7 +95,7 @@ app.get('/api/questions/:subject', async (req, res) => {
     }
 });
 
-// UPGRADED Results Route: Now saves both the final score AND the individual answers
+// ULTIMATE RESULTS ROUTE - Mapped strictly to the new Aiven table structure
 app.post('/api/results', async (req, res) => {
     try {
         const {
@@ -106,15 +106,14 @@ app.post('/api/results', async (req, res) => {
             passed,
             totalQuestions,
             correctAnswers,
-            wrongAnswers,
-            answers // <-- Array of individual question answers from frontend
+            answers // Array of individual question answers from frontend
         } = req.body;
 
-        // 1. Insert the main score into the `results` table
+        // 1. Insert the main score using EXACT column names from the newly created database table
         const sql = `
             INSERT INTO results 
-            (user_id, student_name, exam_id, score_percentage, status, total_questions, correct_count, wrong_count) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (user_id, student_name, exam_id, percentage, passed, total_questions, correct_answers) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [insertResult] = await queryWithTimeout(sql, [
@@ -122,13 +121,12 @@ app.post('/api/results', async (req, res) => {
             studentName || 'Unknown Student',
             examId || 'Unknown Exam',
             percentage || 0,
-            passed ? 'Pass' : 'Fail', 
+            passed ? 1 : 0, // Converts true/false to 1/0 for the database
             totalQuestions || 10,
-            correctAnswers || 0,
-            wrongAnswers || 0
+            correctAnswers || 0
         ]);
 
-        const newResultId = insertResult.insertId; // Get the ID of the result we just saved
+        const newResultId = insertResult.insertId; 
 
         // 2. Loop through and save every individual answer into `result_answers`
         if (answers && Array.isArray(answers) && answers.length > 0) {
@@ -137,7 +135,6 @@ app.post('/api/results', async (req, res) => {
                     INSERT INTO result_answers (result_id, question_id, selected_option, is_correct) 
                     VALUES (?, ?, ?, ?)
                 `;
-                // Uses a try-catch inside the loop so one bad answer doesn't crash the whole submission
                 try {
                     await queryWithTimeout(answerSql, [
                         newResultId, 
