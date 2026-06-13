@@ -6,7 +6,7 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ALL FRONTENDS WHITELISTED
+// ALL FRONTENDS WHITELISTED (Includes the corrected "yuoy" URL)
 app.use(cors({
     origin: [
         'http://localhost:5173', 
@@ -84,17 +84,40 @@ app.get('/api/exams', async (req, res) => {
     }
 });
 
-// FIX 1: Fetch questions for a specific exam subject
+// Fetch 10 randomized questions for a specific subject
 app.get('/api/questions/:subject', async (req, res) => {
     try {
         const subject = req.params.subject;
-        const [questions] = await queryWithTimeout('SELECT * FROM questions WHERE LOWER(subject) = LOWER(?)', [subject]);
+        const limit = 10;
+        const [questions] = await queryWithTimeout(
+            'SELECT * FROM questions WHERE LOWER(subject) = LOWER(?) ORDER BY RAND() LIMIT ?', 
+            [subject, limit]
+        );
         res.json(questions);
     } catch (error) {
-        console.error("❌ FETCH SUBJECT QUESTIONS ERROR:", error.message);
         res.status(500).json({ message: "Error fetching questions" });
     }
 });
+
+// Submit Exam Results
+app.post('/api/results', async (req, res) => {
+    try {
+        const { email, subject, score, totalQuestions, scorePercentage, status } = req.body;
+        const sql = 'INSERT INTO results (email, subject, score, total_questions, score_percentage, status) VALUES (?, ?, ?, ?, ?, ?)';
+        await queryWithTimeout(sql, [
+            email || 'unknown', 
+            subject, 
+            score, 
+            totalQuestions || 10, 
+            scorePercentage, 
+            status || (scorePercentage >= 50 ? 'Pass' : 'Fail')
+        ]);
+        res.status(201).json({ success: true, message: "Exam submitted successfully!" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error saving result" });
+    }
+});
+
 
 // ==========================================
 // 2. ADMIN PORTAL ROUTES
@@ -141,15 +164,13 @@ app.get('/api/admin/exams', async (req, res) => {
     }
 });
 
-// FIX 2: Toggle Exam Visibility Route
+// Toggle Exam Visibility
 app.put('/api/admin/exams/:id/toggle', async (req, res) => {
     try {
         const examId = req.params.id;
-        // Flips the boolean value in the database
         await queryWithTimeout('UPDATE exams SET is_active = NOT is_active WHERE id = ?', [examId]);
         res.json({ success: true, message: "Exam visibility toggled" });
     } catch (error) {
-        console.error("❌ TOGGLE EXAM ERROR:", error.message);
         res.status(500).json({ success: false, message: "Error toggling exam" });
     }
 });
