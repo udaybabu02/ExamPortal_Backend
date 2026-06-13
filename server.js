@@ -6,6 +6,9 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// ==========================================
+// CONFIGURATION & DATABASE
+// ==========================================
 app.use(cors({
     origin: [
         'http://localhost:5173', 
@@ -29,6 +32,7 @@ const pool = mysql.createPool({
     connectionLimit: 10
 });
 
+// Helper for database queries with safety timeout
 const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
@@ -46,12 +50,13 @@ app.get('/', (req, res) => res.send('ARMS Portal Backend is Active!'));
 // ==========================================
 // 1. STUDENT PORTAL ROUTES
 // ==========================================
+
 app.post('/api/register', async (req, res) => {
     try {
         const { name, email, password, mobile, idType, hallTicketNumber, userId } = req.body;
         const sql = 'INSERT INTO users (name, email, password, mobile, id_type, user_id_value, hall_ticket) VALUES (?, ?, ?, ?, ?, ?, ?)';
         await queryWithTimeout(sql, [name || 'Student', email, password, mobile || '', idType || '', (idType === 'college' ? userId : hallTicketNumber), hallTicketNumber]);
-        res.status(201).json({ success: true });
+        res.status(201).json({ success: true, message: "Registration successful" });
     } catch (error) {
         res.status(500).json({ success: false, message: "Database error", details: error.message });
     }
@@ -90,45 +95,92 @@ app.get('/api/questions/:subject', async (req, res) => {
     }
 });
 
-// ULTIMATE FALLBACK RESULTS ROUTE
+// UPGRADED Results Route: Now saves both the final score AND the individual answers
 app.post('/api/results', async (req, res) => {
     try {
-        console.log("📝 Incoming Exam Data:", req.body); // This will log what React is sending
+        const {
+            userId,
+            studentName,
+            examId,
+            percentage,
+            passed,
+            totalQuestions,
+            correctAnswers,
+            wrongAnswers,
+            answers // <-- Array of individual question answers from frontend
+        } = req.body;
 
-        // Safely extract every possible variation of the variable names
-        const email = req.body.email || req.body.userEmail || 'unknown@student.com';
-        const subject = req.body.subject || 'Unknown Subject';
-        const score = req.body.score || 0;
-        const totalQuestions = req.body.totalQuestions || req.body.total_questions || 10;
-        const scorePercentage = req.body.scorePercentage || req.body.score_percentage || 0;
-        const status = req.body.status || (scorePercentage >= 50 ? 'Pass' : 'Fail');
+        // 1. Insert the main score into the `results` table
+        const sql = `
+            INSERT INTO results 
+            (user_id, student_name, exam_id, score_percentage, status, total_questions, correct_count, wrong_count) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+        
+        const [insertResult] = await queryWithTimeout(sql, [
+            userId || 0,
+            studentName || 'Unknown Student',
+            examId || 'Unknown Exam',
+            percentage || 0,
+            passed ? 'Pass' : 'Fail', 
+            totalQuestions || 10,
+            correctAnswers || 0,
+            wrongAnswers || 0
+        ]);
 
-        const sql = 'INSERT INTO results (email, subject, score, total_questions, score_percentage, status) VALUES (?, ?, ?, ?, ?, ?)';
+        const newResultId = insertResult.insertId; // Get the ID of the result we just saved
+
+        // 2. Loop through and save every individual answer into `result_answers`
+        if (answers && Array.isArray(answers) && answers.length > 0) {
+            for (let ans of answers) {
+                const answerSql = `
+                    INSERT INTO result_answers (result_id, question_id, selected_option, is_correct) 
+                    VALUES (?, ?, ?, ?)
+                `;
+                // Uses a try-catch inside the loop so one bad answer doesn't crash the whole submission
+                try {
+                    await queryWithTimeout(answerSql, [
+                        newResultId, 
+                        ans.questionId, 
+                        ans.selected || 'Not answered', 
+                        ans.isCorrect ? 1 : 0
+                    ]);
+                } catch (ansErr) {
+                    console.error("Warning: Could not save individual answer:", ansErr.message);
+                }
+            }
+        }
         
-        await queryWithTimeout(sql, [email, subject, score, totalQuestions, scorePercentage, status]);
-        
-        res.status(201).json({ success: true, message: "Exam submitted successfully!" });
+        res.status(201).json({ success: true, message: "Exam and answers submitted successfully!" });
     } catch (error) {
         console.error("❌ SUBMISSION ERROR:", error.message);
-        // We now send the exact database error back to the browser so you can read it!
         res.status(500).json({ success: false, message: "Database error", error: error.message });
     }
 });
 
+
 // ==========================================
 // 2. ADMIN PORTAL ROUTES
 // ==========================================
+
 app.get('/api/admin/analytics', async (req, res) => {
     try {
         const [[{ count: totalStudents }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM users', []);
         const [[{ count: totalExams }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM exams', []);
         const [[{ count: totalQuestions }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM questions', []);
+        
         let totalResults = 0;
         try {
             const [[{ count }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM results', []);
             totalResults = count;
         } catch (e) {}
-        res.json({ totalStudents: totalStudents || 0, totalExams: totalExams || 0, totalQuestions: totalQuestions || 0, totalResults: totalResults || 0 });
+
+        res.json({
+            totalStudents: totalStudents || 0,
+            totalExams: totalExams || 0,
+            totalQuestions: totalQuestions || 0,
+            totalResults: totalResults || 0
+        });
     } catch (error) {
         res.status(500).json({ message: "Error fetching analytics" });
     }
@@ -143,7 +195,6 @@ app.get('/api/questions', async (req, res) => {
     }
 });
 
-// Delete a question
 app.delete('/api/questions/:id', async (req, res) => {
     try {
         await queryWithTimeout('DELETE FROM questions WHERE id = ?', [req.params.id]);
@@ -153,10 +204,8 @@ app.delete('/api/questions/:id', async (req, res) => {
     }
 });
 
-// Add new question(s)
 app.post('/api/questions', async (req, res) => {
     try {
-        // Handles both bulk arrays and single objects
         if (Array.isArray(req.body)) {
             for (let q of req.body) {
                 await queryWithTimeout('INSERT INTO questions (subject, question_text, option_a, option_b, option_c, option_d, correct_answer) VALUES (?, ?, ?, ?, ?, ?, ?)', 
@@ -182,12 +231,22 @@ app.get('/api/admin/exams', async (req, res) => {
     }
 });
 
+app.post('/api/admin/exams', async (req, res) => {
+    try {
+        const { subject, duration, questions } = req.body;
+        await queryWithTimeout('INSERT INTO exams (subject, duration_minutes, total_questions, is_active) VALUES (?, ?, ?, TRUE)', [subject, duration, questions]);
+        res.status(201).json({ success: true, message: "Exam created" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error creating exam" });
+    }
+});
+
 app.put('/api/admin/exams/:id/toggle', async (req, res) => {
     try {
         await queryWithTimeout('UPDATE exams SET is_active = NOT is_active WHERE id = ?', [req.params.id]);
-        res.json({ success: true });
+        res.json({ success: true, message: "Exam visibility toggled" });
     } catch (error) {
-        res.status(500).json({ success: false });
+        res.status(500).json({ success: false, message: "Error toggling exam" });
     }
 });
 
@@ -197,16 +256,6 @@ app.get('/api/admin/results', async (req, res) => {
         res.json(rows);
     } catch (error) {
         res.status(500).json({ message: "Error fetching results" });
-    }
-});
-
-app.post('/api/admin/exams', async (req, res) => {
-    try {
-        const { subject, duration, questions } = req.body;
-        await queryWithTimeout('INSERT INTO exams (subject, duration_minutes, total_questions, is_active) VALUES (?, ?, ?, TRUE)', [subject, duration, questions]);
-        res.status(201).json({ success: true });
-    } catch (error) {
-        res.status(500).json({ success: false });
     }
 });
 
