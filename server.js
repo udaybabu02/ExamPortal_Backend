@@ -32,7 +32,6 @@ const pool = mysql.createPool({
     connectionLimit: 10
 });
 
-// Helper for database queries with safety timeout
 const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
@@ -85,31 +84,63 @@ app.get('/api/exams', async (req, res) => {
     }
 });
 
+// UPGRADED: Anti-Duplicate Question Fetcher
 app.get('/api/questions/:subject', async (req, res) => {
     try {
         const subject = req.params.subject;
-        const [questions] = await queryWithTimeout('SELECT * FROM questions WHERE LOWER(subject) = LOWER(?) ORDER BY RAND() LIMIT 10', [subject]);
+        // GROUP BY question_text ensures we only pull unique questions, even if duplicates exist in the DB!
+        const sql = `
+            SELECT MIN(id) as id, subject, question_text, option_a, option_b, option_c, option_d, correct_answer 
+            FROM questions 
+            WHERE LOWER(subject) = LOWER(?) 
+            GROUP BY question_text 
+            ORDER BY RAND() 
+            LIMIT 10
+        `;
+        const [questions] = await queryWithTimeout(sql, [subject]);
         res.json(questions);
     } catch (error) {
         res.status(500).json({ message: "Error fetching questions" });
     }
 });
 
-// ULTIMATE RESULTS ROUTE - Mapped strictly to the new Aiven table structure
+// UPGRADED: Server-Side Grading Results Route
 app.post('/api/results', async (req, res) => {
     try {
-        const {
-            userId,
-            studentName,
-            examId,
-            percentage,
-            passed,
-            totalQuestions,
-            correctAnswers,
-            answers // Array of individual question answers from frontend
-        } = req.body;
+        const { userId, studentName, examId, totalQuestions = 10, answers } = req.body;
+        let calculatedCorrectCount = 0;
 
-        // 1. Insert the main score using EXACT column names from the newly created database table
+        // 1. SERVER-SIDE GRADING: Calculate the score based on the answers array
+        if (answers && Array.isArray(answers) && answers.length > 0) {
+            // Get all question IDs the student answered
+            const questionIds = answers.map(a => a.questionId).filter(id => id);
+
+            if (questionIds.length > 0) {
+                // Fetch the real correct answers from the database securely
+                const [dbQuestions] = await pool.query(
+                    `SELECT id, correct_answer FROM questions WHERE id IN (?)`, [questionIds]
+                );
+
+                // Check student answers against the DB
+                const correctAnswersMap = {};
+                dbQuestions.forEach(q => correctAnswersMap[q.id] = q.correct_answer);
+
+                answers.forEach(ans => {
+                    const realAnswer = correctAnswersMap[ans.questionId];
+                    if (realAnswer && String(ans.selected).trim().toLowerCase() === String(realAnswer).trim().toLowerCase()) {
+                        calculatedCorrectCount++;
+                        ans.isCorrect = true; // Mark true for the database insert below
+                    } else {
+                        ans.isCorrect = false;
+                    }
+                });
+            }
+        }
+
+        const calculatedPercentage = (calculatedCorrectCount / totalQuestions) * 100;
+        const isPassed = calculatedPercentage >= 50 ? 1 : 0;
+
+        // 2. Insert the accurately calculated score into the database
         const sql = `
             INSERT INTO results 
             (user_id, student_name, exam_id, percentage, passed, total_questions, correct_answers) 
@@ -120,35 +151,29 @@ app.post('/api/results', async (req, res) => {
             userId || 0,
             studentName || 'Unknown Student',
             examId || 'Unknown Exam',
-            percentage || 0,
-            passed ? 1 : 0, // Converts true/false to 1/0 for the database
-            totalQuestions || 10,
-            correctAnswers || 0
+            calculatedPercentage,
+            isPassed,
+            totalQuestions,
+            calculatedCorrectCount
         ]);
 
         const newResultId = insertResult.insertId; 
 
-        // 2. Loop through and save every individual answer into `result_answers`
+        // 3. Save the individual answer breakdown
         if (answers && Array.isArray(answers) && answers.length > 0) {
             for (let ans of answers) {
-                const answerSql = `
-                    INSERT INTO result_answers (result_id, question_id, selected_option, is_correct) 
-                    VALUES (?, ?, ?, ?)
-                `;
                 try {
-                    await queryWithTimeout(answerSql, [
-                        newResultId, 
-                        ans.questionId, 
-                        ans.selected || 'Not answered', 
-                        ans.isCorrect ? 1 : 0
-                    ]);
+                    await queryWithTimeout(
+                        `INSERT INTO result_answers (result_id, question_id, selected_option, is_correct) VALUES (?, ?, ?, ?)`, 
+                        [newResultId, ans.questionId, ans.selected || 'Not answered', ans.isCorrect ? 1 : 0]
+                    );
                 } catch (ansErr) {
                     console.error("Warning: Could not save individual answer:", ansErr.message);
                 }
             }
         }
         
-        res.status(201).json({ success: true, message: "Exam and answers submitted successfully!" });
+        res.status(201).json({ success: true, message: "Exam accurately graded and submitted!" });
     } catch (error) {
         console.error("❌ SUBMISSION ERROR:", error.message);
         res.status(500).json({ success: false, message: "Database error", error: error.message });
@@ -247,7 +272,6 @@ app.put('/api/admin/exams/:id/toggle', async (req, res) => {
     }
 });
 
-// UPGRADED: Get Student Results (With translation aliases for the frontend)
 app.get('/api/admin/results', async (req, res) => {
     try {
         const sql = `
