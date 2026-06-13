@@ -6,7 +6,7 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ALL FRONTENDS WHITELISTED (With the corrected "yuoy" typo)
+// ALL FRONTENDS WHITELISTED
 app.use(cors({
     origin: [
         'http://localhost:5173', 
@@ -84,18 +84,28 @@ app.get('/api/exams', async (req, res) => {
     }
 });
 
+// FIX 1: Fetch questions for a specific exam subject
+app.get('/api/questions/:subject', async (req, res) => {
+    try {
+        const subject = req.params.subject;
+        const [questions] = await queryWithTimeout('SELECT * FROM questions WHERE LOWER(subject) = LOWER(?)', [subject]);
+        res.json(questions);
+    } catch (error) {
+        console.error("❌ FETCH SUBJECT QUESTIONS ERROR:", error.message);
+        res.status(500).json({ message: "Error fetching questions" });
+    }
+});
+
 // ==========================================
-// 2. ADMIN PORTAL ROUTES (Fixes the Dashboard 404s)
+// 2. ADMIN PORTAL ROUTES
 // ==========================================
 
-// Dashboard Analytics Data
 app.get('/api/admin/analytics', async (req, res) => {
     try {
         const [[{ count: totalStudents }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM users', []);
         const [[{ count: totalExams }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM exams', []);
         const [[{ count: totalQuestions }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM questions', []);
         
-        // Catch results separately in case the table is empty or missing initially
         let totalResults = 0;
         try {
             const [[{ count }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM results', []);
@@ -109,12 +119,10 @@ app.get('/api/admin/analytics', async (req, res) => {
             totalResults: totalResults || 0
         });
     } catch (error) {
-        console.error("Analytics Error:", error.message);
         res.status(500).json({ message: "Error fetching analytics" });
     }
 });
 
-// Get all Questions
 app.get('/api/questions', async (req, res) => {
     try {
         const [rows] = await queryWithTimeout('SELECT * FROM questions ORDER BY id DESC', []);
@@ -124,7 +132,6 @@ app.get('/api/questions', async (req, res) => {
     }
 });
 
-// Get all Exams for Admin View
 app.get('/api/admin/exams', async (req, res) => {
     try {
         const [rows] = await queryWithTimeout('SELECT * FROM exams ORDER BY id DESC', []);
@@ -134,7 +141,19 @@ app.get('/api/admin/exams', async (req, res) => {
     }
 });
 
-// Get all Results
+// FIX 2: Toggle Exam Visibility Route
+app.put('/api/admin/exams/:id/toggle', async (req, res) => {
+    try {
+        const examId = req.params.id;
+        // Flips the boolean value in the database
+        await queryWithTimeout('UPDATE exams SET is_active = NOT is_active WHERE id = ?', [examId]);
+        res.json({ success: true, message: "Exam visibility toggled" });
+    } catch (error) {
+        console.error("❌ TOGGLE EXAM ERROR:", error.message);
+        res.status(500).json({ success: false, message: "Error toggling exam" });
+    }
+});
+
 app.get('/api/admin/results', async (req, res) => {
     try {
         const [rows] = await queryWithTimeout('SELECT * FROM results ORDER BY id DESC', []);
@@ -144,7 +163,6 @@ app.get('/api/admin/results', async (req, res) => {
     }
 });
 
-// Create a new Exam
 app.post('/api/admin/exams', async (req, res) => {
     try {
         const { subject, duration, questions } = req.body;
@@ -155,7 +173,6 @@ app.post('/api/admin/exams', async (req, res) => {
     }
 });
 
-// Get all Users
 app.get('/api/admin/users', async (req, res) => {
     try {
         const [rows] = await queryWithTimeout('SELECT id, name, email, mobile, id_type, hall_ticket FROM users ORDER BY id DESC', []);
