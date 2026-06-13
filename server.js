@@ -6,14 +6,14 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// All origins allowed for both Student and Admin portals
+// ALL FRONTENDS WHITELISTED (With the corrected "yuoy" typo)
 app.use(cors({
     origin: [
         'http://localhost:5173', 
         'http://localhost:8081', 
         'https://admin-of-exam.vercel.app', 
         'https://exam-portal-frontend-coral.vercel.app',
-        'https://exam-portal-frontend-1yuy707c-udays-projects-efeeda01.vercel.app'
+        'https://exam-portal-frontend-1yuoy707c-udays-projects-efeeda01.vercel.app'
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true
@@ -43,15 +43,18 @@ const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     }
 };
 
-// --- ROUTES ---
+// --- BASE ROUTE ---
 app.get('/', (req, res) => res.send('ARMS Portal Backend is Active!'));
 
-// 1. User Routes
+// ==========================================
+// 1. STUDENT PORTAL ROUTES
+// ==========================================
+
 app.post('/api/register', async (req, res) => {
     try {
         const { name, email, password, mobile, idType, hallTicketNumber, userId } = req.body;
         const sql = 'INSERT INTO users (name, email, password, mobile, id_type, user_id_value, hall_ticket) VALUES (?, ?, ?, ?, ?, ?, ?)';
-        await queryWithTimeout(sql, [name, email, password, mobile, idType, (idType === 'college' ? userId : hallTicketNumber), hallTicketNumber]);
+        await queryWithTimeout(sql, [name || 'Student', email, password, mobile || '', idType || '', (idType === 'college' ? userId : hallTicketNumber), hallTicketNumber]);
         res.status(201).json({ success: true, message: "Registration successful" });
     } catch (error) {
         res.status(500).json({ success: false, message: "Database error", details: error.message });
@@ -72,7 +75,6 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 2. Exam Routes (For Student)
 app.get('/api/exams', async (req, res) => {
     try {
         const [rows] = await queryWithTimeout('SELECT id, subject, duration_minutes, total_questions FROM exams WHERE is_active = TRUE', []);
@@ -82,7 +84,67 @@ app.get('/api/exams', async (req, res) => {
     }
 });
 
-// 3. Admin Routes (Fixes 404s in Admin Portal)
+// ==========================================
+// 2. ADMIN PORTAL ROUTES (Fixes the Dashboard 404s)
+// ==========================================
+
+// Dashboard Analytics Data
+app.get('/api/admin/analytics', async (req, res) => {
+    try {
+        const [[{ count: totalStudents }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM users', []);
+        const [[{ count: totalExams }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM exams', []);
+        const [[{ count: totalQuestions }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM questions', []);
+        
+        // Catch results separately in case the table is empty or missing initially
+        let totalResults = 0;
+        try {
+            const [[{ count }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM results', []);
+            totalResults = count;
+        } catch (e) { /* Ignore if results table doesn't exist yet */ }
+
+        res.json({
+            totalStudents: totalStudents || 0,
+            totalExams: totalExams || 0,
+            totalQuestions: totalQuestions || 0,
+            totalResults: totalResults || 0
+        });
+    } catch (error) {
+        console.error("Analytics Error:", error.message);
+        res.status(500).json({ message: "Error fetching analytics" });
+    }
+});
+
+// Get all Questions
+app.get('/api/questions', async (req, res) => {
+    try {
+        const [rows] = await queryWithTimeout('SELECT * FROM questions ORDER BY id DESC', []);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching questions" });
+    }
+});
+
+// Get all Exams for Admin View
+app.get('/api/admin/exams', async (req, res) => {
+    try {
+        const [rows] = await queryWithTimeout('SELECT * FROM exams ORDER BY id DESC', []);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching exams" });
+    }
+});
+
+// Get all Results
+app.get('/api/admin/results', async (req, res) => {
+    try {
+        const [rows] = await queryWithTimeout('SELECT * FROM results ORDER BY id DESC', []);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching results" });
+    }
+});
+
+// Create a new Exam
 app.post('/api/admin/exams', async (req, res) => {
     try {
         const { subject, duration, questions } = req.body;
@@ -93,9 +155,10 @@ app.post('/api/admin/exams', async (req, res) => {
     }
 });
 
+// Get all Users
 app.get('/api/admin/users', async (req, res) => {
     try {
-        const [rows] = await queryWithTimeout('SELECT id, name, email, mobile, id_type, hall_ticket FROM users', []);
+        const [rows] = await queryWithTimeout('SELECT id, name, email, mobile, id_type, hall_ticket FROM users ORDER BY id DESC', []);
         res.json(rows);
     } catch (error) {
         res.status(500).json({ message: "Error fetching users" });
