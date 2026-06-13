@@ -32,6 +32,7 @@ const pool = mysql.createPool({
     connectionLimit: 10
 });
 
+// Helper for database queries with safety timeout
 const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
@@ -50,25 +51,26 @@ app.get('/', (req, res) => res.send('ARMS Portal Backend is Active!'));
 // 1. STUDENT PORTAL ROUTES
 // ==========================================
 
-// UPGRADED: Bulletproof Registration Route
+// UPGRADED: Bulletproof Registration Route (Database Strict-Mode Safe)
 app.post('/api/register', async (req, res) => {
     try {
         console.log("📝 Incoming Registration Data:", req.body);
 
-        // 1. Safely extract every possible variation of the variable names sent by React
+        // 1. Safely extract every possible variation of the variable names
         const name = req.body.name || req.body.studentName || 'Student';
         const email = req.body.email || req.body.userEmail;
         const password = req.body.password;
         const mobile = req.body.mobile || req.body.phoneNumber || '';
         const idType = req.body.idType || req.body.id_type || '';
         
-        // Catch all possible variations of the Hall Ticket / User ID field
+        // Catch all possible variations of the Hall Ticket field
         const finalIdValue = req.body.hallTicketNumber || req.body.hallTicket || req.body.userId || req.body.hall_ticket || '';
 
-        // 2. Insert into the database (Removed the problematic 'user_id_value' column)
-        const sql = 'INSERT INTO users (name, email, password, mobile, id_type, hall_ticket) VALUES (?, ?, ?, ?, ?, ?)';
+        // 2. Re-added 'user_id_value' to the query so the database doesn't crash!
+        const sql = 'INSERT INTO users (name, email, password, mobile, id_type, user_id_value, hall_ticket) VALUES (?, ?, ?, ?, ?, ?, ?)';
         
-        await queryWithTimeout(sql, [name, email, password, mobile, idType, finalIdValue]);
+        // We pass finalIdValue to BOTH user_id_value and hall_ticket to guarantee it saves
+        await queryWithTimeout(sql, [name, email, password, mobile, idType, finalIdValue, finalIdValue]);
         
         res.status(201).json({ success: true, message: "Registration successful" });
     } catch (error) {
