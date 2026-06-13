@@ -6,12 +6,14 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// All origins allowed for both Student and Admin portals
 app.use(cors({
     origin: [
         'http://localhost:5173', 
         'http://localhost:8081', 
         'https://admin-of-exam.vercel.app', 
-        'https://exam-portal-frontend-coral.vercel.app'
+        'https://exam-portal-frontend-coral.vercel.app',
+        'https://exam-portal-frontend-1yuy707c-udays-projects-efeeda01.vercel.app'
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true
@@ -28,7 +30,7 @@ const pool = mysql.createPool({
     connectionLimit: 10
 });
 
-// Helper for database queries with timeout
+// Helper for database queries with safety timeout
 const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
@@ -41,47 +43,62 @@ const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     }
 };
 
-// --- REGISTER ROUTE (Corrected to match DB schema) ---
+// --- ROUTES ---
+app.get('/', (req, res) => res.send('ARMS Portal Backend is Active!'));
+
+// 1. User Routes
 app.post('/api/register', async (req, res) => {
     try {
         const { name, email, password, mobile, idType, hallTicketNumber, userId } = req.body;
-        
-        if (!email || !password) return res.status(400).json({ success: false, message: "Missing fields" });
-
-        // SQL updated to match your database columns: name, email, password, mobile, id_type, user_id_value, hall_ticket
         const sql = 'INSERT INTO users (name, email, password, mobile, id_type, user_id_value, hall_ticket) VALUES (?, ?, ?, ?, ?, ?, ?)';
-        
-        await queryWithTimeout(sql, [
-            name || 'Student', 
-            email, 
-            password, 
-            mobile || '', 
-            idType || '', 
-            (idType === 'college' ? userId : hallTicketNumber), // Maps to user_id_value
-            hallTicketNumber // Maps to hall_ticket
-        ]);
-        
+        await queryWithTimeout(sql, [name, email, password, mobile, idType, (idType === 'college' ? userId : hallTicketNumber), hallTicketNumber]);
         res.status(201).json({ success: true, message: "Registration successful" });
     } catch (error) {
-        console.error("❌ REGISTER ERROR:", error.message);
         res.status(500).json({ success: false, message: "Database error", details: error.message });
     }
 });
 
-// --- LOGIN ROUTE ---
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         const [users] = await queryWithTimeout('SELECT * FROM users WHERE email = ?', [email]);
-        
         if (users.length > 0 && users[0].password === password) {
             res.json({ success: true, user: users[0] });
         } else {
-            res.status(401).json({ success: false, message: "Invalid email or password" });
+            res.status(401).json({ success: false, message: "Invalid credentials" });
         }
     } catch (error) {
-        console.error("❌ LOGIN ERROR:", error.message);
-        res.status(500).json({ success: false, message: "Login server error" });
+        res.status(500).json({ success: false, message: "Login error" });
+    }
+});
+
+// 2. Exam Routes (For Student)
+app.get('/api/exams', async (req, res) => {
+    try {
+        const [rows] = await queryWithTimeout('SELECT id, subject, duration_minutes, total_questions FROM exams WHERE is_active = TRUE', []);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching exams" });
+    }
+});
+
+// 3. Admin Routes (Fixes 404s in Admin Portal)
+app.post('/api/admin/exams', async (req, res) => {
+    try {
+        const { subject, duration, questions } = req.body;
+        await queryWithTimeout('INSERT INTO exams (subject, duration_minutes, total_questions, is_active) VALUES (?, ?, ?, TRUE)', [subject, duration, questions]);
+        res.status(201).json({ success: true, message: "Exam created" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error creating exam" });
+    }
+});
+
+app.get('/api/admin/users', async (req, res) => {
+    try {
+        const [rows] = await queryWithTimeout('SELECT id, name, email, mobile, id_type, hall_ticket FROM users', []);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching users" });
     }
 });
 
