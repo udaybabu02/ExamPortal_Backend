@@ -6,7 +6,6 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ALL FRONTENDS WHITELISTED (Includes the corrected "yuoy" URL)
 app.use(cors({
     origin: [
         'http://localhost:5173', 
@@ -30,7 +29,6 @@ const pool = mysql.createPool({
     connectionLimit: 10
 });
 
-// Helper for database queries with safety timeout
 const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     let timeoutHandle;
     const timeoutPromise = new Promise((_, reject) => {
@@ -43,19 +41,17 @@ const queryWithTimeout = async (sql, params, timeoutMs = 8000) => {
     }
 };
 
-// --- BASE ROUTE ---
 app.get('/', (req, res) => res.send('ARMS Portal Backend is Active!'));
 
 // ==========================================
 // 1. STUDENT PORTAL ROUTES
 // ==========================================
-
 app.post('/api/register', async (req, res) => {
     try {
         const { name, email, password, mobile, idType, hallTicketNumber, userId } = req.body;
         const sql = 'INSERT INTO users (name, email, password, mobile, id_type, user_id_value, hall_ticket) VALUES (?, ?, ?, ?, ?, ?, ?)';
         await queryWithTimeout(sql, [name || 'Student', email, password, mobile || '', idType || '', (idType === 'college' ? userId : hallTicketNumber), hallTicketNumber]);
-        res.status(201).json({ success: true, message: "Registration successful" });
+        res.status(201).json({ success: true });
     } catch (error) {
         res.status(500).json({ success: false, message: "Database error", details: error.message });
     }
@@ -84,63 +80,45 @@ app.get('/api/exams', async (req, res) => {
     }
 });
 
-// Fetch 10 randomized questions for a specific subject
 app.get('/api/questions/:subject', async (req, res) => {
     try {
         const subject = req.params.subject;
-        const limit = 10;
-        const [questions] = await queryWithTimeout(
-            'SELECT * FROM questions WHERE LOWER(subject) = LOWER(?) ORDER BY RAND() LIMIT ?', 
-            [subject, limit]
-        );
+        const [questions] = await queryWithTimeout('SELECT * FROM questions WHERE LOWER(subject) = LOWER(?) ORDER BY RAND() LIMIT 10', [subject]);
         res.json(questions);
     } catch (error) {
         res.status(500).json({ message: "Error fetching questions" });
     }
 });
 
-// Submit Exam Results
 app.post('/api/results', async (req, res) => {
     try {
-        const { email, subject, score, totalQuestions, scorePercentage, status } = req.body;
+        // Added fallback variables to ensure the query never crashes if a field is slightly named differently in React
+        const email = req.body.email || req.body.userEmail || 'unknown@student.com';
+        const { subject, score, totalQuestions, scorePercentage, status } = req.body;
+        
         const sql = 'INSERT INTO results (email, subject, score, total_questions, score_percentage, status) VALUES (?, ?, ?, ?, ?, ?)';
-        await queryWithTimeout(sql, [
-            email || 'unknown', 
-            subject, 
-            score, 
-            totalQuestions || 10, 
-            scorePercentage, 
-            status || (scorePercentage >= 50 ? 'Pass' : 'Fail')
-        ]);
+        await queryWithTimeout(sql, [email, subject, score, totalQuestions || 10, scorePercentage || 0, status || (scorePercentage >= 50 ? 'Pass' : 'Fail')]);
         res.status(201).json({ success: true, message: "Exam submitted successfully!" });
     } catch (error) {
+        console.error("❌ SUBMISSION ERROR:", error.message);
         res.status(500).json({ success: false, message: "Error saving result" });
     }
 });
 
-
 // ==========================================
 // 2. ADMIN PORTAL ROUTES
 // ==========================================
-
 app.get('/api/admin/analytics', async (req, res) => {
     try {
         const [[{ count: totalStudents }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM users', []);
         const [[{ count: totalExams }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM exams', []);
         const [[{ count: totalQuestions }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM questions', []);
-        
         let totalResults = 0;
         try {
             const [[{ count }]] = await queryWithTimeout('SELECT COUNT(*) as count FROM results', []);
             totalResults = count;
-        } catch (e) { /* Ignore if results table doesn't exist yet */ }
-
-        res.json({
-            totalStudents: totalStudents || 0,
-            totalExams: totalExams || 0,
-            totalQuestions: totalQuestions || 0,
-            totalResults: totalResults || 0
-        });
+        } catch (e) {}
+        res.json({ totalStudents: totalStudents || 0, totalExams: totalExams || 0, totalQuestions: totalQuestions || 0, totalResults: totalResults || 0 });
     } catch (error) {
         res.status(500).json({ message: "Error fetching analytics" });
     }
@@ -155,6 +133,36 @@ app.get('/api/questions', async (req, res) => {
     }
 });
 
+// FIX: Delete a question
+app.delete('/api/questions/:id', async (req, res) => {
+    try {
+        await queryWithTimeout('DELETE FROM questions WHERE id = ?', [req.params.id]);
+        res.json({ success: true, message: "Question deleted" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error deleting question" });
+    }
+});
+
+// FIX: Add new question(s)
+app.post('/api/questions', async (req, res) => {
+    try {
+        // Handles both bulk arrays and single objects
+        if (Array.isArray(req.body)) {
+            for (let q of req.body) {
+                await queryWithTimeout('INSERT INTO questions (subject, question_text, option_a, option_b, option_c, option_d, correct_answer) VALUES (?, ?, ?, ?, ?, ?, ?)', 
+                [q.subject || 'Java', q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_answer]);
+            }
+        } else {
+            const { subject, question_text, option_a, option_b, option_c, option_d, correct_answer } = req.body;
+            await queryWithTimeout('INSERT INTO questions (subject, question_text, option_a, option_b, option_c, option_d, correct_answer) VALUES (?, ?, ?, ?, ?, ?, ?)', 
+            [subject, question_text, option_a, option_b, option_c, option_d, correct_answer]);
+        }
+        res.status(201).json({ success: true, message: "Added successfully" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error adding questions" });
+    }
+});
+
 app.get('/api/admin/exams', async (req, res) => {
     try {
         const [rows] = await queryWithTimeout('SELECT * FROM exams ORDER BY id DESC', []);
@@ -164,14 +172,12 @@ app.get('/api/admin/exams', async (req, res) => {
     }
 });
 
-// Toggle Exam Visibility
 app.put('/api/admin/exams/:id/toggle', async (req, res) => {
     try {
-        const examId = req.params.id;
-        await queryWithTimeout('UPDATE exams SET is_active = NOT is_active WHERE id = ?', [examId]);
-        res.json({ success: true, message: "Exam visibility toggled" });
+        await queryWithTimeout('UPDATE exams SET is_active = NOT is_active WHERE id = ?', [req.params.id]);
+        res.json({ success: true });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Error toggling exam" });
+        res.status(500).json({ success: false });
     }
 });
 
@@ -188,9 +194,9 @@ app.post('/api/admin/exams', async (req, res) => {
     try {
         const { subject, duration, questions } = req.body;
         await queryWithTimeout('INSERT INTO exams (subject, duration_minutes, total_questions, is_active) VALUES (?, ?, ?, TRUE)', [subject, duration, questions]);
-        res.status(201).json({ success: true, message: "Exam created" });
+        res.status(201).json({ success: true });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Error creating exam" });
+        res.status(500).json({ success: false });
     }
 });
 
