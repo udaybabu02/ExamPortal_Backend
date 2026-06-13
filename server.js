@@ -247,9 +247,22 @@ app.put('/api/admin/exams/:id/toggle', async (req, res) => {
     }
 });
 
+// UPGRADED: Get Student Results (With translation aliases for the frontend)
 app.get('/api/admin/results', async (req, res) => {
     try {
-        const [rows] = await queryWithTimeout('SELECT * FROM results ORDER BY id DESC', []);
+        const sql = `
+            SELECT 
+                id, 
+                student_name, 
+                exam_id, 
+                percentage AS score_percentage, 
+                correct_answers AS correct_count, 
+                (total_questions - correct_answers) AS wrong_count,
+                IF(passed = 1, 'Pass', 'Fail') AS status
+            FROM results 
+            ORDER BY id DESC
+        `;
+        const [rows] = await queryWithTimeout(sql, []);
         res.json(rows);
     } catch (error) {
         res.status(500).json({ message: "Error fetching results" });
