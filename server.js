@@ -90,18 +90,28 @@ app.get('/api/questions/:subject', async (req, res) => {
     }
 });
 
+// ULTIMATE FALLBACK RESULTS ROUTE
 app.post('/api/results', async (req, res) => {
     try {
-        // Added fallback variables to ensure the query never crashes if a field is slightly named differently in React
+        console.log("📝 Incoming Exam Data:", req.body); // This will log what React is sending
+
+        // Safely extract every possible variation of the variable names
         const email = req.body.email || req.body.userEmail || 'unknown@student.com';
-        const { subject, score, totalQuestions, scorePercentage, status } = req.body;
-        
+        const subject = req.body.subject || 'Unknown Subject';
+        const score = req.body.score || 0;
+        const totalQuestions = req.body.totalQuestions || req.body.total_questions || 10;
+        const scorePercentage = req.body.scorePercentage || req.body.score_percentage || 0;
+        const status = req.body.status || (scorePercentage >= 50 ? 'Pass' : 'Fail');
+
         const sql = 'INSERT INTO results (email, subject, score, total_questions, score_percentage, status) VALUES (?, ?, ?, ?, ?, ?)';
-        await queryWithTimeout(sql, [email, subject, score, totalQuestions || 10, scorePercentage || 0, status || (scorePercentage >= 50 ? 'Pass' : 'Fail')]);
+        
+        await queryWithTimeout(sql, [email, subject, score, totalQuestions, scorePercentage, status]);
+        
         res.status(201).json({ success: true, message: "Exam submitted successfully!" });
     } catch (error) {
         console.error("❌ SUBMISSION ERROR:", error.message);
-        res.status(500).json({ success: false, message: "Error saving result" });
+        // We now send the exact database error back to the browser so you can read it!
+        res.status(500).json({ success: false, message: "Database error", error: error.message });
     }
 });
 
@@ -133,7 +143,7 @@ app.get('/api/questions', async (req, res) => {
     }
 });
 
-// FIX: Delete a question
+// Delete a question
 app.delete('/api/questions/:id', async (req, res) => {
     try {
         await queryWithTimeout('DELETE FROM questions WHERE id = ?', [req.params.id]);
@@ -143,7 +153,7 @@ app.delete('/api/questions/:id', async (req, res) => {
     }
 });
 
-// FIX: Add new question(s)
+// Add new question(s)
 app.post('/api/questions', async (req, res) => {
     try {
         // Handles both bulk arrays and single objects
